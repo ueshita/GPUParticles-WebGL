@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0px;
+        padding: 0px;
+      }
+      canvas {
+        width: 512px;
+        height: 512px;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="main" width="512" height="512"></canvas>
+    <script src="particles.js"></script>
+    <script id="shader-vs" type="x-shader/x-vertex">
+      attribute vec3 position;
+      void main(void) {
+         gl_Position = vec4(position, 1.0);
+      }
+    </script>
+  </body>
+</html>
