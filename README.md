@@ -8,5 +8,5 @@ Experimental implementation.
 https://ueshita.github.io/GPUParticles-WebGL/
 
 # Dependencies repository
-- minMatrix https://codeload.github.com/doxas/minMatrix.js/zip/master
+- minMatrix https://github.com/doxas/minMatrix.js
 - webgl-noise https://github.com/ashima/webgl-noise
