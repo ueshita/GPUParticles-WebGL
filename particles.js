@@ -1,27 +1,7 @@
-
-window.addEventListener("load", () => {
-	init();
-});
-
-const canvas = document.getElementById("main");
-canvas.addEventListener("mousemove", (e) => {
-	targetX = e.clientX;
-	targetY = e.clientY;
-});
-let targetX = canvas.width / 2;
-let targetY = canvas.height / 2;
-let currentX = canvas.width / 2;
-let currentY = canvas.height / 2;
-
-/** @type {WebGL2RenderingContext} */
-const gl = canvas.getContext("webgl2");
-console.log(gl.getSupportedExtensions());
-
-const BufferTexSize = 512;
-const BufferTexels = BufferTexSize * BufferTexSize;
+const TrailBufferSize = 32;
 
 class GpuParticlesBuffer {
-	constructor() {
+	constructor(width, height) {
 		this.sampler = createSampler(gl.CLAMP_TO_EDGE, gl.NEAREST);
 
 		gl.getExtension("EXT_color_buffer_float");
@@ -31,12 +11,12 @@ class GpuParticlesBuffer {
 
 		this.positionTexture = gl.createTexture();
 		gl.bindTexture(gl.TEXTURE_2D, this.positionTexture);
-		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, BufferTexSize, BufferTexSize, 0, gl.RGBA, gl.FLOAT, null);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
 		gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.positionTexture, 0);
 
 		this.velocityTexture = gl.createTexture();
 		gl.bindTexture(gl.TEXTURE_2D, this.velocityTexture);
-		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, BufferTexSize, BufferTexSize, 0, gl.RGBA, gl.FLOAT, null);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
 		gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, this.velocityTexture, 0);
 
 		//console.log(gl.checkFramebufferStatus(gl.FRAMEBUFFER), gl.FRAMEBUFFER_COMPLETE);
@@ -68,8 +48,10 @@ class GpuParticlesBuffer {
 }
 
 class GpuParticlesContext {
-
-	constructor() {
+	constructor(maxParticleCount = 128 * 1024) {
+		this.texWidth = TrailBufferSize;
+		this.texHeight = ((maxParticleCount + this.texWidth - 1) / this.texWidth) | 0;
+		this.maxParticleCount = this.texWidth * this.texHeight;
 		this.pingpong = 0;
 
 		this.quadBuffer = gl.createBuffer();
@@ -86,27 +68,56 @@ class GpuParticlesContext {
 		this.newParticleCount = 0;
 
 		this.buffers = [];
-		this.buffers.push(new GpuParticlesBuffer());
-		this.buffers.push(new GpuParticlesBuffer());
+		this.buffers.push(new GpuParticlesBuffer(this.texWidth, this.texHeight));
+		this.buffers.push(new GpuParticlesBuffer(this.texWidth, this.texHeight));
 
 		this.colorTableTexture = createColorTableTexture();
 		this.sampler = createSampler(gl.REPEAT, gl.LINEAR);
 		
 		this.shaderParams = {
-			ID2TPos: [BufferTexSize - 1, 31 - Math.clz32(BufferTexSize)],
-			TPos2VPos: [2.0 / BufferTexSize, 1.0 / BufferTexSize - 1.0],
+			ID2TPos: [this.texWidth - 1, 31 - Math.clz32(this.texWidth)],
+			TPos2VPos: [2.0 / this.texWidth, 2.0 / this.texHeight, 
+						1.0 / this.texWidth - 1.0, 1.0 / this.texHeight - 1.0],
+			ViewMatrix: Mat4.identity(),
+			ProjMatrix: Mat4.identity(),
 		};
+
+		this.trailMode = false;
+		this.trailOffset = 0;
+		this.trailFrameBuffer = gl.createFramebuffer();
+		this.trailBufferTexture = gl.createTexture();
+		gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.trailBufferTexture);
+		gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGBA32F, this.texWidth, this.texHeight, TrailBufferSize, 0, gl.RGBA, gl.FLOAT, null);
+		gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+
+		const trailVertexData = new Float32Array((TrailBufferSize + 1) * 4);
+		for (let i = 0; i <= TrailBufferSize; i++) {
+			trailVertexData[i * 4 + 0] = +i / TrailBufferSize;
+			trailVertexData[i * 4 + 1] = 0.5;
+			trailVertexData[i * 4 + 2] = +i / TrailBufferSize;
+			trailVertexData[i * 4 + 3] = -0.5;
+		}
+		this.trailVertexBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, this.trailVertexBuffer);
+		gl.bufferData(gl.ARRAY_BUFFER, trailVertexData, gl.STATIC_DRAW);
+		gl.bindBuffer(gl.ARRAY_BUFFER, null);
 	}
 
 	async load() {
-		this.renderShader = await loadShader("perticle-render.vert.glsl", "perticle-render.frag.glsl");
-		this.emitShader = await loadShader("perticle-emit.vert.glsl", "perticle-emit.frag.glsl");
-		this.updateShader = await loadShader("perticle-update.vert.glsl", "perticle-update.frag.glsl");
+		this.emitShader = await loadShader("shaders/perticle-emit.vert.glsl", "shaders/perticle-emit.frag.glsl");
+		this.particleUpdateShader = await loadShader("shaders/perticle-update.vert.glsl", "shaders/perticle-update.frag.glsl");
+		this.particleRenderShader = await loadShader("shaders/perticle-render.vert.glsl", "shaders/perticle-render.frag.glsl");
+		this.trailUpdateShader = await loadShader("shaders/trail-update.vert.glsl", "shaders/trail-update.frag.glsl");
+		this.trailRenderShader = await loadShader("shaders/trail-render.vert.glsl", "shaders/trail-render.frag.glsl");
+	}
+
+	clear() {
+		this.shouldClear = true;
 	}
 
 	emit(lifeTime, position, velocity) {
 		const index = this.newParticleCount * 8;
-		this.emitData[index + 0] = (this.emitedCount + this.newParticleCount) % BufferTexels;
+		this.emitData[index + 0] = (this.emitedCount + this.newParticleCount) % this.maxParticleCount;
 		this.emitData[index + 1] = lifeTime;
 		this.emitData[index + 2] = position[0];
 		this.emitData[index + 3] = position[1];
@@ -120,14 +131,47 @@ class GpuParticlesContext {
 	update() {
 		const sourceIndex = this.pingpong;
 		const targetIndex = (this.pingpong + 1) % 2;
+
+		if (this.shouldClear) {
+			gl.viewport(0, 0, this.texWidth, this.texHeight);
+			this.buffers[sourceIndex].setUpdateTarget();
+			gl.clear(gl.COLOR_BUFFER_BIT);
+			this.shouldClear = false;
+		}
 		
+		if (this.trailMode) {
+			if (--this.trailOffset < 0) {
+				this.trailOffset = TrailBufferSize - 1;
+			}
+			
+			gl.viewport(0, 0, this.texWidth, this.texHeight);
+			gl.useProgram(this.trailUpdateShader);
+			gl.bindFramebuffer(gl.FRAMEBUFFER, this.trailFrameBuffer);
+			this.buffers[sourceIndex].setUpdateSource();
+			gl.uniform1i(gl.getUniformLocation(this.trailUpdateShader, "i_Position"), 0);
+			gl.uniform1i(gl.getUniformLocation(this.trailUpdateShader, "i_Velocity"), 1);
+			gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.trailBufferTexture, 0, this.trailOffset);
+			gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+			gl.enableVertexAttribArray(0);
+			gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+			gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+			gl.disableVertexAttribArray(0);
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+			//gl.bindFramebuffer(gl.FRAMEBUFFER, this.buffers[sourceIndex].frameBuffer);
+			//gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.trailBufferTexture);
+			//gl.copyTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, this.trailOffset, 0, 0, this.texWidth, this.texHeight);
+			//gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+			//gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+		}
+		
+		gl.viewport(0, 0, this.texWidth, this.texHeight);
+		gl.useProgram(this.particleUpdateShader);
 		this.buffers[targetIndex].setUpdateTarget();
-		gl.viewport(0, 0, BufferTexSize, BufferTexSize);
-		gl.useProgram(this.updateShader);
 		this.buffers[sourceIndex].setUpdateSource();
-		gl.uniform1i(gl.getUniformLocation(this.updateShader, "i_Position"), 0);
-		gl.uniform1i(gl.getUniformLocation(this.updateShader, "i_Velocity"), 1);
-		gl.uniform1f(gl.getUniformLocation(this.updateShader, "deltaTime"), 1.0);
+		gl.uniform1i(gl.getUniformLocation(this.particleUpdateShader, "i_Position"), 0);
+		gl.uniform1i(gl.getUniformLocation(this.particleUpdateShader, "i_Velocity"), 1);
+		gl.uniform1f(gl.getUniformLocation(this.particleUpdateShader, "deltaTime"), 1.0);
 		
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
 		gl.enableVertexAttribArray(0);
@@ -142,6 +186,9 @@ class GpuParticlesContext {
 		if (++this.pingpong >= 2) {
 			this.pingpong = 0;
 		}
+
+		Mat4.perspective(30, gl.canvas.width / gl.canvas.height, 0.1, 100, this.shaderParams.ProjMatrix);
+		Mat4.lookAt([0, 2, 2], [0, 0, 0], [0, 1, 0], this.shaderParams.ViewMatrix);
 	}
 
 	_updateEmit(targetIndex) {
@@ -152,12 +199,11 @@ class GpuParticlesContext {
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.emitBuffer);
 		gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.emitData, 0, this.newParticleCount * 8);
 		
-		this.buffers[targetIndex].setUpdateTarget();
-		gl.viewport(0, 0, BufferTexSize, BufferTexSize);
-
+		gl.viewport(0, 0, this.texWidth, this.texHeight);
 		gl.useProgram(particles.emitShader);
+		this.buffers[targetIndex].setUpdateTarget();
 		gl.uniform2iv(gl.getUniformLocation(this.emitShader, "ID2TPos"), this.shaderParams.ID2TPos);
-		gl.uniform2fv(gl.getUniformLocation(this.emitShader, "TPos2VPos"), this.shaderParams.TPos2VPos);
+		gl.uniform4fv(gl.getUniformLocation(this.emitShader, "TPos2VPos"), this.shaderParams.TPos2VPos);
 
 		gl.enableVertexAttribArray(0);
 		gl.enableVertexAttribArray(1);
@@ -173,7 +219,7 @@ class GpuParticlesContext {
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
 		this.emitedCount += this.newParticleCount;
-		this.emitedCount %= BufferTexels;
+		this.emitedCount %= this.maxParticleCount;
 		this.newParticleCount = 0;
 		
 		//gl.readBuffer(gl.COLOR_ATTACHMENT1);
@@ -189,188 +235,54 @@ class GpuParticlesContext {
 		gl.enable(gl.BLEND);
 		gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
-		gl.useProgram(particles.renderShader);
-		//gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+		if (this.trailMode) {
+			gl.useProgram(this.trailRenderShader);
+			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "Position"), 0);
+			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "Velocity"), 1);
+			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "ColorTable"), 2);
+			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "Histories"), 3);
+			gl.uniform2i(gl.getUniformLocation(this.trailRenderShader, "Trail"), this.trailOffset, TrailBufferSize);
+			gl.uniform2iv(gl.getUniformLocation(this.trailRenderShader, "ID2TPos"), this.shaderParams.ID2TPos);
+			gl.uniformMatrix4fv(gl.getUniformLocation(this.trailRenderShader, "ViewMatrix"), false, this.shaderParams.ViewMatrix);
+			gl.uniformMatrix4fv(gl.getUniformLocation(this.trailRenderShader, "ProjMatrix"), false, this.shaderParams.ProjMatrix);
+			gl.activeTexture(gl.TEXTURE3);
+			gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.trailBufferTexture);
+			gl.bindSampler(3, this.buffers[this.pingpong].sampler);
+			gl.activeTexture(gl.TEXTURE0);
+		} else {
+			gl.useProgram(this.particleRenderShader);
+			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "Position"), 0);
+			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "Velocity"), 1);
+			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "ColorTable"), 2);
+			gl.uniform2iv(gl.getUniformLocation(this.particleRenderShader, "ID2TPos"), this.shaderParams.ID2TPos);
+			gl.uniformMatrix4fv(gl.getUniformLocation(this.particleRenderShader, "ViewMatrix"), false, this.shaderParams.ViewMatrix);
+			gl.uniformMatrix4fv(gl.getUniformLocation(this.particleRenderShader, "ProjMatrix"), false, this.shaderParams.ProjMatrix);
+		}
 		this.buffers[this.pingpong].setRenderSource();
-		gl.uniform1i(gl.getUniformLocation(this.renderShader, "Position"), 0);
-		gl.uniform1i(gl.getUniformLocation(this.renderShader, "Velocity"), 1);
-		gl.uniform1i(gl.getUniformLocation(this.renderShader, "ColorTable"), 2);
-		gl.uniform2iv(gl.getUniformLocation(this.renderShader, "ID2TPos"), this.shaderParams.ID2TPos);
 		
 		gl.activeTexture(gl.TEXTURE2);
 		gl.bindTexture(gl.TEXTURE_2D, this.colorTableTexture);
 		gl.bindSampler(2, this.sampler);
 		gl.activeTexture(gl.TEXTURE0);
-
-
-		gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
-		gl.enableVertexAttribArray(0);
-		gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-		gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, BufferTexels);
-		gl.disableVertexAttribArray(0);
 		
+		if (this.trailMode) {
+			//gl.drawArraysInstanced(gl.LINE_STRIP, 0, TrailBufferSize, this.maxParticleCount);
+			gl.bindBuffer(gl.ARRAY_BUFFER, this.trailVertexBuffer);
+			gl.enableVertexAttribArray(0);
+			gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, TrailBufferSize * 2, this.maxParticleCount);
+			gl.disableVertexAttribArray(0);
+			//gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.trailIndexBuffer);
+			//gl.drawElementsInstanced(gl.LINES, 2 * TrailBufferSize, gl.UNSIGNED_SHORT, 0, this.maxParticleCount);
+			//gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+		} else {
+			gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+			gl.enableVertexAttribArray(0);
+			gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+			gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.maxParticleCount);
+			gl.disableVertexAttribArray(0);
+		}
+
 		gl.disable(gl.BLEND);
 	}
-}
-
-const particles = new GpuParticlesContext();
-
-async function init() {
-	await particles.load();
-
-	//particles.emit([0.0, 0.5, 0.0], [0.0, -0.01, 0.0]);
-	//particles.emit([-0.5, -0.5, 0.0], [0.01, 0.01, 0.0]);
-	//particles.emit([0.5, -0.5, 0.0], [-0.01, 0.01, 0.0]);
-
-	requestAnimationFrame(updateFrame);
-}
-
-function updateFrame() {
-	const startX = currentX;
-	const startY = currentY;
-	currentX += (targetX - currentX) * 0.2;
-	currentY += (targetY - currentY) * 0.2;
-
-	const emitCount = 100;
-	for (let i = 0; i < emitCount; i++) {
-		const lifetime = 60 + Math.random() * 100;
-		const rad = Math.random() * 3.141592 * 2.0;
-		const s = Math.sin(rad);
-		const c = Math.cos(rad);
-		const speed = 0.002 + Math.random() * 0.005;
-
-		const mx = startX + (currentX - startX) * i / emitCount;
-		const my = startY + (currentY - startY) * i / emitCount;
-		const x = mx / canvas.width  * 2 - 1;
-		const y = 1 - my / canvas.height * 2;
-		particles.emit(lifetime, [x, y, 0.0], [c * speed, s * speed, 0.0]);
-	}
-	particles.update();
-
-	gl.clearColor(0, 0, 0, 1);
-	gl.clear(gl.COLOR_BUFFER_BIT);
-
-	particles.render();
-
-	requestAnimationFrame(updateFrame);
-}
-
-async function loadShader(vertUrl, fragUrl) {
-	const vertList = [];
-	const fragList = [];
-	const vertSource = await loadShaderFile(vertUrl, vertList);
-	const fragSource = await loadShaderFile(fragUrl, fragList);
-
-	const program = gl.createProgram();
-	const vs = gl.createShader(gl.VERTEX_SHADER);
-	const fs = gl.createShader(gl.FRAGMENT_SHADER);
-	gl.shaderSource(vs, vertSource);
-	gl.shaderSource(fs, fragSource);
-	gl.compileShader(vs);
-	gl.compileShader(fs);
-	
-	let vslog = gl.getShaderInfoLog(vs);
-	if (vslog) {
-		const m = vslog.match(/ERROR\: ([0-9]+)\:([0-9]+)\:/);
-		if (m) vslog = vslog.replace(m[0], "ERROR: \"" + vertList[m[1]] + "\":" + m[2]);
-		console.error("VertexShader: " + vslog + "File: " + vertUrl);
-	}
-	
-	let fslog = gl.getShaderInfoLog(fs);
-	if (fslog) {
-		const m = fslog.match(/ERROR\: ([0-9]+)\:([0-9]+)\:/);
-		if (m) fslog = fslog.replace(m[0], "ERROR: \"" + fragList[m[1]] + "\":" + m[2]);
-		console.error("FragmentShader: " + fslog);
-	}
-	
-	gl.attachShader(program, vs);
-	gl.attachShader(program, fs);
-	gl.linkProgram(program);
-	const plog = gl.getProgramInfoLog(program);
-	if (plog) console.error("ShaderProgram: " + plog + "File: " + vertUrl + "/" + fragUrl);
-	return program;
-}
-
-async function loadShaderFile(shaderUrl, shaderList) {
-	
-	const shaderNumber = shaderList.length;
-	const dirIndex = shaderUrl.lastIndexOf('/');
-	const dirUrl = (dirIndex >= 0) ? shaderUrl.slice(0, dirIndex + 1) : "";
-	shaderList.push(shaderUrl);
-
-	const source = await loadText(shaderUrl);
-
-	let lines = source.split(/\r\n|\r|\n/);
-	for (let i = 0; i < lines.length; i++) {
-		const m = lines[i].match(/#include \"(.*?)\"/);
-		if (m) {
-			lines[i] = await loadShaderFile(dirUrl + m[1], shaderList);
-			lines.splice(i + 1, 0, "#line " + (i + 2) + " " + shaderNumber);
-			i++;
-		}
-	}
-	if (lines[0].indexOf("#version") >= 0) {
-		lines.splice(1, 0, "#line 2 " + shaderNumber);
-	} else {
-		lines.splice(0, 0, "#line 1 " + shaderNumber);
-	}
-	return lines.join("\n");
-}
-
-async function loadText(url) {
-	const a = await fetch(url);
-	const b = await a.text();
-	return b;
-}
-
-function createSampler(wrap, filter) {
-	const sampler = gl.createSampler();
-	gl.samplerParameteri(sampler, gl.TEXTURE_WRAP_S, wrap);
-	gl.samplerParameteri(sampler, gl.TEXTURE_WRAP_T, wrap);
-	gl.samplerParameteri(sampler, gl.TEXTURE_MIN_FILTER, filter);
-	gl.samplerParameteri(sampler, gl.TEXTURE_MAG_FILTER, filter);
-	return sampler;
-}
-
-function createColorTableTexture() {
-	const width = 128;
-	const pixels = new Uint8Array(width * 4);
-	for (let x = 0; x < width; x++) {
-		const rgb = hsv2rgb([x * 360 / width, 0.8, 1.0]);
-		pixels[x * 4 + 0] = rgb[0];
-		pixels[x * 4 + 1] = rgb[1];
-		pixels[x * 4 + 2] = rgb[2];
-		pixels[x * 4 + 3] = 255;
-	}
-	const texture = gl.createTexture();
-	gl.bindTexture(gl.TEXTURE_2D, texture);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-	gl.bindTexture(gl.TEXTURE_2D, null);
-	return texture;
-}
-
-function hsv2rgb(hsv) {
-	var h = hsv[0] / 60 ;
-	var s = hsv[1] ;
-	var v = hsv[2] ;
-	if ( s == 0 ) return [ v * 255, v * 255, v * 255 ] ;
-
-	var rgb ;
-	var i = parseInt( h ) ;
-	var f = h - i ;
-	var v1 = v * (1 - s) ;
-	var v2 = v * (1 - s * f) ;
-	var v3 = v * (1 - s * (1 - f)) ;
-
-	switch( i ) {
-		case 0:
-		case 6: rgb = [ v, v3, v1 ]; break;
-		case 1: rgb = [ v2, v, v1 ]; break;
-		case 2: rgb = [ v1, v, v3 ]; break;
-		case 3: rgb = [ v1, v2, v ]; break;
-		case 4: rgb = [ v3, v1, v ]; break;
-		case 5: rgb = [ v, v1, v2 ]; break;
-	}
-
-	return rgb.map(v => v * 255);
 }

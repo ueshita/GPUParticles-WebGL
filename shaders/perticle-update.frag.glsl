@@ -3,7 +3,7 @@
 precision highp float;
 precision highp int;
 
-#include "noise/noise2D.glsl"
+#include "noise/noise3D.glsl"
 
 uniform sampler2D i_Position;
 uniform sampler2D i_Velocity;
@@ -21,7 +21,7 @@ void main() {
 	position.w += deltaTime;
 	// Apply gravity
 	//velocity.y -= 0.0003;
-	velocity.xyz += 0.001 * vec3(snoise(position.xy), snoise(position.yz), 0.0);
+	velocity.xyz += 0.001 * vec3(snoise(position.xyz), snoise(position.yzx), snoise(position.zxy));
 	// Update position
 	position.xyz += velocity.xyz;
 	// Store data

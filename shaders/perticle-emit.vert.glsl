@@ -11,12 +11,12 @@ flat out vec4 v_Position;
 flat out vec4 v_Velocity;
 
 uniform ivec2 ID2TPos;
-uniform vec2 TPos2VPos;
+uniform vec4 TPos2VPos;
 
 void main() {
 	int particleID = int(a_Particle.x);
 	float lifetime = float(a_Particle.y);
-	vec2 glpos = vec2(particleID & ID2TPos.x, particleID >> ID2TPos.y) * TPos2VPos.x + TPos2VPos.y;
+	vec2 glpos = vec2(particleID & ID2TPos.x, particleID >> ID2TPos.y) * TPos2VPos.xy + TPos2VPos.zw;
 	gl_Position = vec4(glpos, 0.0, 1.0);
 	gl_PointSize = 1.0;
 	v_Position = vec4(a_Position, 0.0);

@@ -15,6 +15,9 @@ uniform sampler2D Velocity;
 uniform sampler2D ColorTable;
 uniform ivec2 ID2TPos;
 
+uniform mat4 ViewMatrix;
+uniform mat4 ProjMatrix;
+
 vec2 rotate(vec2 pos, float deg)
 {
 	const float toRad = 3.141592 / 180.0;
@@ -35,7 +38,8 @@ void main() {
 	} else {
 		//position.xyz += vec3(a_VertexPosition * 0.003, 0.0);
 		position.xyz += vec3(rotate(a_VertexPosition * 0.003, 45.0), 0.0);
-		gl_Position = vec4(position.xyz, 1.0);
+		gl_Position = ProjMatrix * ViewMatrix * vec4(position.xyz, 1.0);
+		//gl_Position = vec4(position.xyz, 1.0);
 		
 		vec2 texCoord = vec2(snoise(vec2(texPos) / 512.0));
 		v_Color = texture(ColorTable, texCoord);
