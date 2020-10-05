@@ -4,14 +4,15 @@ precision highp float;
 precision highp int;
 
 #include "noise/noise2D.glsl"
+#include "render-utils.glsl"
 
 layout(location = 0) in vec2 a_VertexPosition;
 
 out vec4 v_Color;
 
 uniform highp sampler2DArray Histories;
-uniform sampler2D Position;
-uniform sampler2D Velocity;
+uniform sampler2D ParticleData0;
+uniform sampler2D ParticleData1;
 uniform sampler2D ColorTable;
 uniform ivec2 Trail;
 uniform ivec2 ID2TPos;
@@ -29,22 +30,26 @@ void main() {
 	//int particleID = int(a_ParticleIndex);
 	int particleID = gl_InstanceID;
 	ivec2 texPos = ivec2(particleID & ID2TPos.x, particleID >> ID2TPos.y);
-	vec4 position = texelFetch(Position, texPos, 0);
-	vec4 velocity = texelFetch(Velocity, texPos, 0);
+	vec4 data0 = texelFetch(ParticleData0, texPos, 0);
+	vec4 data1 = texelFetch(ParticleData1, texPos, 0);
 	
-	float age = position.w;
-	if (position.w >= velocity.w || age <= 0.0) {
+	float age = data1.x;
+	float lifetime = data1.y;
+
+	if (age >= lifetime || age <= 0.0) {
 		gl_Position = vec4(0.0);
 		v_Color = vec4(0.0);
 	} else {
 		float historyID = a_VertexPosition.x * min(float(Trail.y), age);
-		vec3 direction;
+		vec3 position, direction;
 		if (historyID >= 1.0) {
 			int texIndex = (Trail.x + int(historyID) - 1) % Trail.y;
-			position = texelFetch(Histories, ivec3(texPos, texIndex), 0);
-			direction = unpackVec3(position.w);
+			vec4 trailData = texelFetch(Histories, ivec3(texPos, texIndex), 0);
+			position = trailData.xyz;
+			direction = unpackVec3(trailData.w);
 		} else {
-			direction = normalize(velocity.xyz);
+			position = data0.xyz;
+			direction = unpackVec3(data0.w);
 		}
 		vec3 vertex = cross(vec3(0.0, 1.0, 0.0), direction) * a_VertexPosition.y * 0.02;
 		
@@ -53,6 +58,7 @@ void main() {
 		gl_Position = ProjMatrix * (ViewMatrix * vec4(position.xyz + vertex, 1.0));
 		
 		vec2 texCoord = vec2(snoise(vec2(texPos) / 512.0));
-		v_Color = vec4(texture(ColorTable, texCoord).rgb, 0.5);
+		v_Color = texture(ColorTable, texCoord);
+		v_Color.a *= 0.5 * fadeInOut(10.0, 10.0, age, lifetime);
 	}
 }

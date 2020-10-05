@@ -53,6 +53,7 @@ class GpuParticlesContext {
 		this.texHeight = ((maxParticleCount + this.texWidth - 1) / this.texWidth) | 0;
 		this.maxParticleCount = this.texWidth * this.texHeight;
 		this.pingpong = 0;
+		this.particleIndex = 0;
 
 		this.quadBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
@@ -61,9 +62,9 @@ class GpuParticlesContext {
 
 		this.emitBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.emitBuffer);
-		gl.bufferData(gl.ARRAY_BUFFER, 1024 * 8 * 4, gl.STATIC_DRAW);
+		gl.bufferData(gl.ARRAY_BUFFER, 1024 * 9 * 4, gl.STATIC_DRAW);
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
-		this.emitData = new Float32Array(1024 * 8 * 4);
+		this.emitData = new Float32Array(1024 * 9 * 4);
 		this.emitedCount = 0;
 		this.newParticleCount = 0;
 
@@ -115,17 +116,19 @@ class GpuParticlesContext {
 		this.shouldClear = true;
 	}
 
-	emit(lifeTime, position, velocity) {
-		const index = this.newParticleCount * 8;
+	emit(lifeTime, position, direction) {
+		const index = this.newParticleCount * 9;
 		this.emitData[index + 0] = (this.emitedCount + this.newParticleCount) % this.maxParticleCount;
 		this.emitData[index + 1] = lifeTime;
-		this.emitData[index + 2] = position[0];
-		this.emitData[index + 3] = position[1];
-		this.emitData[index + 4] = position[2];
-		this.emitData[index + 5] = velocity[0];
-		this.emitData[index + 6] = velocity[1];
-		this.emitData[index + 7] = velocity[2];
+		this.emitData[index + 2] = Math.random();
+		this.emitData[index + 3] = position[0];
+		this.emitData[index + 4] = position[1];
+		this.emitData[index + 5] = position[2];
+		this.emitData[index + 6] = direction[0];
+		this.emitData[index + 7] = direction[1];
+		this.emitData[index + 8] = direction[2];
 		this.newParticleCount++;
+		this.particleIndex++;
 	}
 
 	update() {
@@ -144,34 +147,34 @@ class GpuParticlesContext {
 				this.trailOffset = TrailBufferSize - 1;
 			}
 			
-			gl.viewport(0, 0, this.texWidth, this.texHeight);
-			gl.useProgram(this.trailUpdateShader);
-			gl.bindFramebuffer(gl.FRAMEBUFFER, this.trailFrameBuffer);
-			this.buffers[sourceIndex].setUpdateSource();
-			gl.uniform1i(gl.getUniformLocation(this.trailUpdateShader, "i_Position"), 0);
-			gl.uniform1i(gl.getUniformLocation(this.trailUpdateShader, "i_Velocity"), 1);
-			gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.trailBufferTexture, 0, this.trailOffset);
-			gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
-			gl.enableVertexAttribArray(0);
-			gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-			gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-			gl.disableVertexAttribArray(0);
-			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-			//gl.bindFramebuffer(gl.FRAMEBUFFER, this.buffers[sourceIndex].frameBuffer);
-			//gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.trailBufferTexture);
-			//gl.copyTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, this.trailOffset, 0, 0, this.texWidth, this.texHeight);
-			//gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+			//gl.viewport(0, 0, this.texWidth, this.texHeight);
+			//gl.useProgram(this.trailUpdateShader);
+			//gl.bindFramebuffer(gl.FRAMEBUFFER, this.trailFrameBuffer);
+			//this.buffers[sourceIndex].setUpdateSource();
+			//gl.uniform1i(gl.getUniformLocation(this.trailUpdateShader, "i_ParticleData0"), 0);
+			//gl.uniform1i(gl.getUniformLocation(this.trailUpdateShader, "i_ParticleData1"), 1);
+			//gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, this.trailBufferTexture, 0, this.trailOffset);
+			//gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+			//gl.enableVertexAttribArray(0);
+			//gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+			//gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+			//gl.disableVertexAttribArray(0);
 			//gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+			gl.bindFramebuffer(gl.FRAMEBUFFER, this.buffers[sourceIndex].frameBuffer);
+			gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.trailBufferTexture);
+			gl.copyTexSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, this.trailOffset, 0, 0, this.texWidth, this.texHeight);
+			gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 		}
 		
 		gl.viewport(0, 0, this.texWidth, this.texHeight);
 		gl.useProgram(this.particleUpdateShader);
 		this.buffers[targetIndex].setUpdateTarget();
 		this.buffers[sourceIndex].setUpdateSource();
-		gl.uniform1i(gl.getUniformLocation(this.particleUpdateShader, "i_Position"), 0);
-		gl.uniform1i(gl.getUniformLocation(this.particleUpdateShader, "i_Velocity"), 1);
-		gl.uniform1f(gl.getUniformLocation(this.particleUpdateShader, "deltaTime"), 1.0);
+		gl.uniform1i(gl.getUniformLocation(this.particleUpdateShader, "i_ParticleData0"), 0);
+		gl.uniform1i(gl.getUniformLocation(this.particleUpdateShader, "i_ParticleData1"), 1);
+		gl.uniform1f(gl.getUniformLocation(this.particleUpdateShader, "DeltaTime"), 1.0);
 		
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
 		gl.enableVertexAttribArray(0);
@@ -197,7 +200,7 @@ class GpuParticlesContext {
 		}
 
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.emitBuffer);
-		gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.emitData, 0, this.newParticleCount * 8);
+		gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.emitData, 0, this.newParticleCount * 9);
 		
 		gl.viewport(0, 0, this.texWidth, this.texHeight);
 		gl.useProgram(particles.emitShader);
@@ -208,9 +211,9 @@ class GpuParticlesContext {
 		gl.enableVertexAttribArray(0);
 		gl.enableVertexAttribArray(1);
 		gl.enableVertexAttribArray(2);
-		gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 4 * 8, 4 * 0);
-		gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 4 * 8, 4 * 2);
-		gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 4 * 8, 4 * 5);
+		gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 4 * 9, 4 * 0);
+		gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 4 * 9, 4 * 3);
+		gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 4 * 9, 4 * 6);
 		
 		gl.drawArrays(gl.POINTS, 0, this.newParticleCount);
 		gl.disableVertexAttribArray(0);
@@ -237,8 +240,8 @@ class GpuParticlesContext {
 
 		if (this.trailMode) {
 			gl.useProgram(this.trailRenderShader);
-			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "Position"), 0);
-			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "Velocity"), 1);
+			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "ParticleData0"), 0);
+			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "ParticleData1"), 1);
 			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "ColorTable"), 2);
 			gl.uniform1i(gl.getUniformLocation(this.trailRenderShader, "Histories"), 3);
 			gl.uniform2i(gl.getUniformLocation(this.trailRenderShader, "Trail"), this.trailOffset, TrailBufferSize);
@@ -251,8 +254,8 @@ class GpuParticlesContext {
 			gl.activeTexture(gl.TEXTURE0);
 		} else {
 			gl.useProgram(this.particleRenderShader);
-			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "Position"), 0);
-			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "Velocity"), 1);
+			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "ParticleData0"), 0);
+			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "ParticleData1"), 1);
 			gl.uniform1i(gl.getUniformLocation(this.particleRenderShader, "ColorTable"), 2);
 			gl.uniform2iv(gl.getUniformLocation(this.particleRenderShader, "ID2TPos"), this.shaderParams.ID2TPos);
 			gl.uniformMatrix4fv(gl.getUniformLocation(this.particleRenderShader, "ViewMatrix"), false, this.shaderParams.ViewMatrix);
